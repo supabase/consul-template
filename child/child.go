@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -12,6 +11,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Sirupsen/logrus"
 )
 
 func init() {
@@ -68,6 +69,8 @@ type Child struct {
 
 	// whether to set process group id or not (default on)
 	setpgid bool
+
+	logger *logrus.Entry
 }
 
 // NewInput is input to the NewChild function.
@@ -111,6 +114,8 @@ type NewInput struct {
 	// prevents multiple processes from all signaling at the same time. This value
 	// may be zero (which disables the splay entirely).
 	Splay time.Duration
+
+	Logger *logrus.Entry
 }
 
 // New creates a new child process for management with high-level APIs for
@@ -139,6 +144,7 @@ func New(i *NewInput) (*Child, error) {
 		splay:        i.Splay,
 		stopCh:       make(chan struct{}, 1),
 		setpgid:      true,
+		logger:       i.Logger,
 	}
 
 	return child, nil
@@ -174,6 +180,7 @@ func (c *Child) Command() string {
 // execution will be returned as a non-zero value over the exit code channel.
 func (c *Child) Start() error {
 	log.Printf("[INFO] (child) spawning: %s", c.Command())
+	c.logger.Info(fmt.Sprintf("(child) spawning %q %q", c.command, c.args))
 	c.Lock()
 	defer c.Unlock()
 	return c.start()
@@ -182,7 +189,7 @@ func (c *Child) Start() error {
 // Signal sends the signal to the child process, returning any errors that
 // occur.
 func (c *Child) Signal(s os.Signal) error {
-	log.Printf("[INFO] (child) receiving signal %q", s.String())
+	c.logger.Info(fmt.Sprintf("(child) receiving signal %q", s.String()))
 	c.RLock()
 	defer c.RUnlock()
 	return c.signal(s)
@@ -193,7 +200,7 @@ func (c *Child) Signal(s os.Signal) error {
 // replaces the process attached to this Child.
 func (c *Child) Reload() error {
 	if c.reloadSignal == nil {
-		log.Printf("[INFO] (child) restarting process")
+		c.logger.Info("(child) restarting process")
 
 		// Take a full lock because start is going to replace the process. We also
 		// want to make sure that no other routines attempt to send reload signals
@@ -204,7 +211,7 @@ func (c *Child) Reload() error {
 		c.kill(false)
 		return c.start()
 	}
-
+	c.logger.Info("(child) reloading process")
 	log.Printf("[INFO] (child) reloading process")
 
 	// We only need a read lock here because neither the process nor the exit
@@ -224,7 +231,7 @@ func (c *Child) Reload() error {
 // does not return any errors because it guarantees the process will be dead by
 // the return of the function call.
 func (c *Child) Kill() {
-	log.Printf("[INFO] (child) killing process")
+	c.logger.Info("(child) killing process")
 	c.Lock()
 	defer c.Unlock()
 	c.kill(false)
@@ -247,6 +254,7 @@ func (c *Child) StopImmediately() {
 
 func (c *Child) internalStop(immediately bool) {
 	log.Printf("[INFO] (child) stopping process")
+	c.logger.Info(fmt.Sprintf("(child) stopping process"))
 
 	c.Lock()
 	defer c.Unlock()
@@ -254,7 +262,7 @@ func (c *Child) internalStop(immediately bool) {
 	c.stopLock.Lock()
 	defer c.stopLock.Unlock()
 	if c.stopped {
-		log.Printf("[WARN] (child) already stopped")
+		c.logger.Warn("(child) already stopped")
 		return
 	}
 	c.kill(immediately)
@@ -453,7 +461,7 @@ func (c *Child) randomSplay() <-chan time.Time {
 	offset := rand.Int63n(ns)
 	t := time.Duration(offset)
 
-	log.Printf("[DEBUG] (child) waiting %.2fs for random splay", t.Seconds())
+	c.logger.Debug(fmt.Sprintf("(child) waiting %.2fs for random splay", t.Seconds()))
 
 	return time.After(t)
 }
