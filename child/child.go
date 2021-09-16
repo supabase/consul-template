@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -70,6 +71,7 @@ type Child struct {
 	// whether to set process group id or not (default on)
 	setpgid bool
 
+	// an optional logger that can be used for messages pertinent to this child process
 	logger *logrus.Entry
 }
 
@@ -115,6 +117,7 @@ type NewInput struct {
 	// may be zero (which disables the splay entirely).
 	Splay time.Duration
 
+	// an optional logger that can be used for messages pertinent to the child process
 	Logger *logrus.Entry
 }
 
@@ -179,8 +182,7 @@ func (c *Child) Command() string {
 // as the second error argument, but any errors returned by the command after
 // execution will be returned as a non-zero value over the exit code channel.
 func (c *Child) Start() error {
-	log.Printf("[INFO] (child) spawning: %s", c.Command())
-	c.logger.Info(fmt.Sprintf("(child) spawning %q %q", c.command, c.args))
+	c.log(logrus.InfoLevel, "(child) spawning: %s", c.Command())
 	c.Lock()
 	defer c.Unlock()
 	return c.start()
@@ -189,10 +191,18 @@ func (c *Child) Start() error {
 // Signal sends the signal to the child process, returning any errors that
 // occur.
 func (c *Child) Signal(s os.Signal) error {
-	c.logger.Info(fmt.Sprintf("(child) receiving signal %q", s.String()))
+	c.log(logrus.InfoLevel, "(child) receiving signal %q", s.String())
 	c.RLock()
 	defer c.RUnlock()
 	return c.signal(s)
+}
+
+func (c *Child) log(level logrus.Level, format string, args ...interface{}) {
+	if c.logger != nil {
+		c.logger.Logf(level, format, args...)
+		return
+	}
+	log.Printf("[%s] %s", strings.ToUpper(level.String()), fmt.Sprintf(format, args...))
 }
 
 // Reload sends the reload signal to the child process and does not wait for a
@@ -200,7 +210,7 @@ func (c *Child) Signal(s os.Signal) error {
 // replaces the process attached to this Child.
 func (c *Child) Reload() error {
 	if c.reloadSignal == nil {
-		c.logger.Info("(child) restarting process")
+		c.log(logrus.InfoLevel, "(child) restarting process")
 
 		// Take a full lock because start is going to replace the process. We also
 		// want to make sure that no other routines attempt to send reload signals
@@ -211,8 +221,7 @@ func (c *Child) Reload() error {
 		c.kill(false)
 		return c.start()
 	}
-	c.logger.Info("(child) reloading process")
-	log.Printf("[INFO] (child) reloading process")
+	c.log(logrus.InfoLevel, "(child) reloading process")
 
 	// We only need a read lock here because neither the process nor the exit
 	// channel are changing.
@@ -231,7 +240,7 @@ func (c *Child) Reload() error {
 // does not return any errors because it guarantees the process will be dead by
 // the return of the function call.
 func (c *Child) Kill() {
-	c.logger.Info("(child) killing process")
+	c.log(logrus.InfoLevel, "(child) killing process")
 	c.Lock()
 	defer c.Unlock()
 	c.kill(false)
@@ -253,8 +262,7 @@ func (c *Child) StopImmediately() {
 }
 
 func (c *Child) internalStop(immediately bool) {
-	log.Printf("[INFO] (child) stopping process")
-	c.logger.Info(fmt.Sprintf("(child) stopping process"))
+	c.log(logrus.InfoLevel, "(child) stopping process")
 
 	c.Lock()
 	defer c.Unlock()
@@ -398,10 +406,10 @@ func (c *Child) reload() error {
 func (c *Child) kill(immediately bool) {
 
 	if !c.running() {
-		log.Printf("[DEBUG] (child) Kill() called but process dead; not waiting for splay.")
+		c.log(logrus.DebugLevel, "(child) Kill() called but process dead; not waiting for splay.")
 		return
 	} else if immediately {
-		log.Printf("[DEBUG] (child) Kill() called but performing immediate shutdown; not waiting for splay.")
+		c.log(logrus.DebugLevel, "(child) Kill() called but performing immediate shutdown; not waiting for splay.")
 	} else {
 		select {
 		case <-c.stopCh:
@@ -422,7 +430,7 @@ func (c *Child) kill(immediately bool) {
 	}
 
 	if err := c.signal(c.killSignal); err != nil {
-		log.Printf("[ERR] (child) Kill failed: %s", err)
+		c.log(logrus.ErrorLevel, "(child) Kill failed: %s", err)
 		if processNotFoundErr(err) {
 			exited = true // checked in defer
 		}
